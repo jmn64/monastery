@@ -2,6 +2,7 @@ mod voxel;
 mod camera;
 mod input;
 mod ui;
+mod terrain_gen;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;

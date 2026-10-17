@@ -1,8 +1,13 @@
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
+use crate::terrain_gen::{apply_hydraulic_erosion, generate_base_noise, ErosionSettings, Heightfield2d};
+
 pub const CHUNK_SIZE: usize = 32;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
+pub const GRID_RADIUS: i32 = 8;
+pub const MAP_CHUNKS: usize = (GRID_RADIUS * 2) as usize;
+pub const MAP_DIMENSION: usize = MAP_CHUNKS * CHUNK_SIZE;
 
 pub fn spawn_voxel_map(
     mut commands: Commands,
@@ -15,11 +20,19 @@ pub fn spawn_voxel_map(
         ..default()
     });
 
-    const GRID_RADIUS: i32 = 8;
+    // allocate heightfield for world bounds
+    let mut heightfield = Heightfield2d::new(MAP_DIMENSION);
 
+    // Multi pass generation: noise base + hydraulic
+    generate_base_noise(&mut heightfield, 6.0, (CHUNK_SIZE - 4) as f32);
+    apply_hydraulic_erosion(&mut heightfield, &ErosionSettings::default());
+
+    let sea_level: usize = 10;
+
+    // rasterize and mesh chunks from global heightfield
     for cx in -GRID_RADIUS..GRID_RADIUS {
         for cz in -GRID_RADIUS..GRID_RADIUS {
-            let chunk_data = generate_terrain_chunk(cx, cz);
+            let chunk_data = generate_terrain_chunk(cx, cz, &heightfield, sea_level);
             let mesh = generate_chunk_mesh(&chunk_data);
 
             let world_x = (cx * CHUNK_SIZE as i32) as f32;
@@ -34,23 +47,40 @@ pub fn spawn_voxel_map(
     }
 }
 
-pub fn generate_terrain_chunk(chunk_x: i32, chunk_z: i32) -> ChunkData {
+pub fn generate_terrain_chunk(
+    chunk_x: i32,
+    chunk_z: i32,
+    field: &Heightfield2d,
+    sea_level: usize,
+) -> ChunkData {
     let mut chunk = ChunkData::default();
 
     for lx in 0..CHUNK_SIZE {
         for lz in 0..CHUNK_SIZE {
-            let wx = (chunk_x * CHUNK_SIZE as i32) + lx as i32;
-            let wz = (chunk_z * CHUNK_SIZE as i32) + lz as i32;
-            let height = sample_terrain_height(wx, wz);
+            // offset coordinates from [-GRID_RADIUS * CHUNK_SIZE] to [0..MAP_DIMENSION]
+            let field_x = ((chunk_x + GRID_RADIUS) * CHUNK_SIZE as i32) + lx as i32;
+            let field_z = ((chunk_z + GRID_RADIUS) * CHUNK_SIZE as i32) + lz as i32;
+
+            let h_val = field.get_height(field_x as usize, field_z as usize);
+            let ground_height = (h_val.round() as usize).clamp(1, CHUNK_SIZE - 2);
 
             for ly in 0..CHUNK_SIZE {
-                let voxel = if ly < height.saturating_sub(2) {
+                let voxel = if ly < ground_height.saturating_sub(3) {
                     VoxelType::Stone
-                } else if ly <= height {
+                } else if ly < ground_height {
                     VoxelType::Dirt
+                } else if ly == ground_height {
+                    if ly <= sea_level {
+                        VoxelType::Dirt //shoreline/submerged
+                    } else {
+                        VoxelType::Grass
+                    }
+                } else if ly <= sea_level {
+                    VoxelType::Water
                 } else {
                     VoxelType::Air
                 };
+
                 chunk.set(lx, ly, lz, voxel);
             }
         }
@@ -59,22 +89,14 @@ pub fn generate_terrain_chunk(chunk_x: i32, chunk_z: i32) -> ChunkData {
     chunk
 }
 
-pub fn sample_terrain_height(world_x: i32, world_z: i32) -> usize {
-    let fx = world_x as f32 * 0.08;
-    let fz = world_z as f32 * 0.08;
-
-    // base height 14, ranging 8 to 20
-    let elevation = 14.0 + (fx.sin() * 4.0) + (fz.cos() * 3.0) + ((fx + fz).sin() * 2.0);
-
-    elevation.clamp(1.0, (CHUNK_SIZE - 2) as f32) as usize
-}
-
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VoxelType {
     Air = 0,
     Stone = 1,
     Dirt = 2,
+    Grass = 3,
+    Water = 4,
 }
 
 impl VoxelType {
@@ -83,11 +105,18 @@ impl VoxelType {
         *self != VoxelType::Air
     }
 
+    #[inline(always)]
+    pub fn is_water(&self) -> bool {
+        *self == VoxelType::Water
+    }
+
     pub fn color(&self) -> [f32; 4] {
         match self {
             VoxelType::Air => [0.0, 0.0, 0.0, 0.0],
             VoxelType::Stone => [0.07, 0.07, 0.06, 1.0],
             VoxelType::Dirt => [0.50, 0.52, 0.55, 1.0],
+            VoxelType::Grass => [0.28, 0.50, 0.22, 1.0],
+            VoxelType::Water => [0.15, 0.35, 0.75, 0.75],
         }
     }
 }
