@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
+use crate::camera::{CurrentLevel, SliceSettings};
 use crate::terrain_gen::{apply_hydraulic_erosion, generate_base_noise, ErosionSettings, Heightfield2d};
 
 pub const CHUNK_SIZE: usize = 32;
@@ -9,10 +11,24 @@ pub const GRID_RADIUS: i32 = 8;
 pub const MAP_CHUNKS: usize = (GRID_RADIUS * 2) as usize;
 pub const MAP_DIMENSION: usize = MAP_CHUNKS * CHUNK_SIZE;
 
+#[derive(Resource, Default)]
+pub struct WorldChunkStorage {
+    pub chunks: HashMap<(i32, i32), ChunkData>,
+}
+
+impl WorldChunkStorage {
+    pub fn get(&self, cx: i32, cz: i32) -> Option<&ChunkData> {
+        self.chunks.get(&(cx, cz))
+    }
+}
+
 pub fn spawn_voxel_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut chunk_storage: ResMut<WorldChunkStorage>,
+    level: Res<CurrentLevel>,
+    slice_settings: Res<SliceSettings>,
 ) {
     let material_handle = materials.add(StandardMaterial {
         base_color: Color::WHITE,
@@ -28,12 +44,17 @@ pub fn spawn_voxel_map(
     apply_hydraulic_erosion(&mut heightfield, &ErosionSettings::default());
 
     let sea_level: usize = 10;
+    let initial_max_y = if slice_settings.enabled {
+        level.0 as usize
+    } else {
+        CHUNK_SIZE
+    };
 
     // rasterize and mesh chunks from global heightfield
     for cx in -GRID_RADIUS..GRID_RADIUS {
         for cz in -GRID_RADIUS..GRID_RADIUS {
             let chunk_data = generate_terrain_chunk(cx, cz, &heightfield, sea_level);
-            let mesh = generate_chunk_mesh(&chunk_data);
+            let mesh = generate_sliced_chunk_mesh(&chunk_data, initial_max_y);
 
             let world_x = (cx * CHUNK_SIZE as i32) as f32;
             let world_z = (cz * CHUNK_SIZE as i32) as f32;
@@ -42,7 +63,36 @@ pub fn spawn_voxel_map(
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(material_handle.clone()),
                 Transform::from_xyz(world_x, 0.0, world_z),
+                ChunkMeshMarker { cx, cz },
                 ));
+
+            chunk_storage.chunks.insert((cx, cz), chunk_data);
+        }
+    }
+}
+
+pub fn update_level_mesh_culling(
+    level: Res<CurrentLevel>,
+    slice_settings: Res<SliceSettings>,
+    chunk_storage: Res<WorldChunkStorage>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    query: Query<(&ChunkMeshMarker, &Mesh3d)>,
+) {
+    if !level.is_changed() && !slice_settings.is_changed() {
+        return;
+    }
+
+    let max_y = if slice_settings.enabled {
+        (level.0.max(0) as usize).min(CHUNK_SIZE)
+    } else {
+        CHUNK_SIZE
+    };
+
+    for (marker, mesh_handle) in &query {
+        if let Some(chunk_data) = chunk_storage.get(marker.cx, marker.cz) {
+            if let Some(mut mesh) = meshes.get_mut(mesh_handle) {
+                *mesh = generate_sliced_chunk_mesh(chunk_data, max_y);
+            }
         }
     }
 }
@@ -121,6 +171,14 @@ impl VoxelType {
     }
 }
 
+#[derive(Component)]
+pub struct ChunkMeshMarker {
+    pub cx: i32,
+    pub cz: i32,
+}
+
+
+#[derive(Clone)]
 pub struct ChunkData {
     pub voxels: Box<[VoxelType; CHUNK_VOLUME]>,
 }
@@ -192,12 +250,16 @@ impl ChunkMeshBuffers {
 }
 
 //Build culled triangle mesh from chunk data buffer
-pub fn generate_chunk_mesh(chunk: &ChunkData) -> Mesh {
+pub fn generate_sliced_chunk_mesh(chunk: &ChunkData, max_render_y: usize) -> Mesh {
     let mut buffers = ChunkMeshBuffers::default();
 
-    for  x in 0..CHUNK_SIZE {
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
+    for x in 0..CHUNK_SIZE {
+        for z in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                if y > max_render_y {
+                    continue;
+                }
+
                 let current = chunk.get(x, y, z);
                 if !current.is_opaque() {
                     continue;
@@ -206,16 +268,17 @@ pub fn generate_chunk_mesh(chunk: &ChunkData) -> Mesh {
                 let origin = [x as f32, y as f32, z as f32];
 
                 for dir in DIRECTIONS {
+                    if dir == Direction::PosY && y == max_render_y {
+                        buffers.push_face(origin, dir, current.color());
+                        continue;
+                    }
+
                     let [dx, dy, dz] = dir.normal_i();
                     let nx = x as i32 + dx;
                     let ny = y as i32 + dy;
                     let nz = z as i32 + dz;
 
-                    // If outside the chunk bounds, treat as air and render boundary face
-                    let neighbor_opaque = if nx < 0 || nx >= CHUNK_SIZE as i32
-                        || ny < 0 || ny >= CHUNK_SIZE as i32
-                        || nz < 0 || nz >= CHUNK_SIZE as i32
-                    {
+                    let neighbor_opaque = if nx < 0 || nx >= CHUNK_SIZE as i32 || ny < 0 || ny >= CHUNK_SIZE as i32 || nz < 0 || nz >= CHUNK_SIZE as i32 {
                         false
                     } else {
                         chunk.get(nx as usize, ny as usize, nz as usize).is_opaque()
@@ -228,11 +291,9 @@ pub fn generate_chunk_mesh(chunk: &ChunkData) -> Mesh {
             }
         }
     }
-
-    // Convert buffers into GPU mesh structure
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD, // free from CPU RAM after uploading to VRAM
+        RenderAssetUsages::default(),
     );
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, buffers.positions);

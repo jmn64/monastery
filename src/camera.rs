@@ -85,6 +85,7 @@ pub fn update_rts_camera(
 
 pub fn update_current_level(
     mut level: ResMut<CurrentLevel>,
+    mut slice_settings: ResMut<SliceSettings>,
     action_query: Query<&ActionState<PlayerAction>>,
 ) {
     for action in action_query.iter() {
@@ -95,15 +96,32 @@ pub fn update_current_level(
         if action.just_pressed(&PlayerAction::LayerDown) {
             level.0 -= 1;
         }
+
+        if action.just_pressed(&PlayerAction::ToggleSlice) {
+            slice_settings.enabled = !slice_settings.enabled;
+        }
     }
 }
 
 #[derive(Resource)]
 pub struct CurrentLevel(pub i32);
 
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct SliceSettings {
+    pub enabled: bool,
+}
+
+impl Default for SliceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+        }
+    }
+}
+
 impl Default for CurrentLevel {
     fn default() -> Self {
-        Self(0)
+        Self(20)
     }
 }
 

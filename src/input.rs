@@ -14,6 +14,7 @@ pub enum PlayerAction {
     Zoom,
     LayerUp,
     LayerDown,
+    ToggleSlice,
 }
 
 pub fn default_camera_input_map() -> InputMap<PlayerAction> {
@@ -36,10 +37,11 @@ pub fn default_camera_input_map() -> InputMap<PlayerAction> {
     // Mouse chords
     map.insert(PlayerAction::OrbitDrag, MouseButton::Right);
     map.insert(PlayerAction::PanDrag, MouseButton::Middle);
-    
+
     // Layer Keys
     map.insert(PlayerAction::LayerUp, KeyCode::BracketRight);
     map.insert(PlayerAction::LayerDown, KeyCode::BracketLeft);
+    map.insert(PlayerAction::ToggleSlice, KeyCode::KeyV);
 
     map
 }

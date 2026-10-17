@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::camera::CurrentLevel;
+use crate::camera::{CurrentLevel, SliceSettings};
 
 #[derive(Component)]
 pub struct LevelText;
@@ -34,6 +34,7 @@ pub fn spawn_level_ui(mut commands: Commands) {
 
 pub fn update_level_ui(
     level: Res<CurrentLevel>,
+    slice: Res<SliceSettings>,
     mut query: Query<&mut Text, With<LevelText>>,
 ) {
     if !level.is_changed() {
@@ -41,6 +42,7 @@ pub fn update_level_ui(
     }
 
     for mut text in &mut query {
-        **text = format!("Level: {}", level.0);
+        let status = if slice.enabled { "ON" } else { "OFF" };
+        **text = format!("Level: {} [Slice: {} (V)]", level.0, status);
     }
 }

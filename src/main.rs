@@ -6,15 +6,18 @@ mod terrain_gen;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
-use crate::camera::{update_current_level, update_rts_camera, CurrentLevel};
+use crate::camera::{update_current_level, update_rts_camera, CurrentLevel, SliceSettings};
 use crate::input::PlayerAction;
 use crate::ui::{spawn_level_ui, update_level_ui};
+use crate::voxel::{update_level_mesh_culling, WorldChunkStorage};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(InputManagerPlugin::<PlayerAction>::default())
         .insert_resource(CurrentLevel::default())
+        .insert_resource(SliceSettings::default())
+        .init_resource::<WorldChunkStorage>()
         .add_systems(Startup, voxel::spawn_voxel_map)
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Startup, spawn_test_light)
@@ -22,6 +25,7 @@ fn main() {
         .add_systems(Update, update_rts_camera)
         .add_systems(Update, update_current_level)
         .add_systems(Update, update_level_ui.after(update_current_level))
+        .add_systems(Update, update_level_mesh_culling.after(update_current_level))
         .run();
 }
 
