@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
+use bevy::tasks::ComputeTaskPool;
 use crate::camera::{CurrentLevel, SliceSettings};
 use crate::terrain_gen::{apply_hydraulic_erosion, generate_base_noise, ErosionSettings, Heightfield2d};
 
@@ -54,6 +55,19 @@ pub fn spawn_voxel_map(
     for cx in -GRID_RADIUS..GRID_RADIUS {
         for cz in -GRID_RADIUS..GRID_RADIUS {
             let chunk_data = generate_terrain_chunk(cx, cz, &heightfield, sea_level);
+
+            let mut min_y = CHUNK_SIZE;
+            let mut max_y = 0;
+            for y in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    for z in 0..CHUNK_SIZE {
+                        if chunk_data.get(x, y, z).is_opaque() {
+                            min_y = min_y.min(y);
+                            max_y = max_y.max(y);
+                        }
+                    }
+                }
+            }
             let mesh = generate_sliced_chunk_mesh(&chunk_data, initial_max_y);
 
             let world_x = (cx * CHUNK_SIZE as i32) as f32;
@@ -63,7 +77,13 @@ pub fn spawn_voxel_map(
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(material_handle.clone()),
                 Transform::from_xyz(world_x, 0.0, world_z),
-                ChunkMeshMarker { cx, cz },
+                ChunkMeshMarker {
+                    cx,
+                    cz,
+                    min_y,
+                    max_y,
+                    current_rendered_y: initial_max_y,
+                },
                 ));
 
             chunk_storage.chunks.insert((cx, cz), chunk_data);
@@ -76,23 +96,63 @@ pub fn update_level_mesh_culling(
     slice_settings: Res<SliceSettings>,
     chunk_storage: Res<WorldChunkStorage>,
     mut meshes: ResMut<Assets<Mesh>>,
-    query: Query<(&ChunkMeshMarker, &Mesh3d)>,
+    mut query: Query<(&mut ChunkMeshMarker, &Mesh3d)>,
 ) {
     if !level.is_changed() && !slice_settings.is_changed() {
         return;
     }
 
-    let max_y = if slice_settings.enabled {
+    let target_y = if slice_settings.enabled {
         (level.0.max(0) as usize).min(CHUNK_SIZE)
     } else {
         CHUNK_SIZE
     };
 
-    for (marker, mesh_handle) in &query {
+    // Collect chunks that actually visually changed
+    let mut chunks_to_remesh = Vec::new();
+
+    for (mut marker, mesh_handle) in &mut query {
+        if marker.current_rendered_y == target_y {
+            continue;
+        }
+
+        // if target_y above max_y and chunk already rendered to max_y, skip
+        if target_y >= marker.max_y && marker.current_rendered_y >= marker.max_y {
+            marker.current_rendered_y = target_y;
+            continue;
+        }
+
+        // if target_y is below min_y and chunk is already empty, skip
+        if target_y < marker.min_y && marker.current_rendered_y < marker.min_y {
+            marker.current_rendered_y = target_y;
+            continue;
+        }
+
+        marker.current_rendered_y = target_y;
         if let Some(chunk_data) = chunk_storage.get(marker.cx, marker.cz) {
-            if let Some(mut mesh) = meshes.get_mut(mesh_handle) {
-                *mesh = generate_sliced_chunk_mesh(chunk_data, max_y);
-            }
+            chunks_to_remesh.push((mesh_handle.clone(), chunk_data.clone()));
+        }
+    }
+
+    if chunks_to_remesh.is_empty() {
+        return;
+    }
+
+    // parallelize mesh buffer generation
+    let pool = ComputeTaskPool::get();
+    let generated_meshes: Vec<(Mesh3d, Mesh)> = pool.scope(|scope| {
+        for (mesh_handle, chunk_data) in chunks_to_remesh {
+            scope.spawn(async move {
+                let mesh = generate_sliced_chunk_mesh(&chunk_data, target_y);
+                (mesh_handle, mesh)
+            });
+        }
+    });
+
+    // mutate GPU asset handles on main thread
+    for (handle, new_mesh) in generated_meshes {
+        if let Some(mut mesh) = meshes.get_mut(&handle) {
+            *mesh = new_mesh;
         }
     }
 }
@@ -175,6 +235,9 @@ impl VoxelType {
 pub struct ChunkMeshMarker {
     pub cx: i32,
     pub cz: i32,
+    pub min_y: usize,
+    pub max_y: usize,
+    pub current_rendered_y: usize,
 }
 
 
