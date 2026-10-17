@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.19.1", features = ["wayland", "dynamic_linking"] }
-leafwing-input-manager = "0.21.0"
+bevy = { version = "0.20.0", features = ["wayland", "dynamic_linking"] }
+leafwing-input-manager = "0.22.0"
 
 [profile.dev]
 opt-level = 1

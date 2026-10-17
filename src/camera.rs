@@ -1,6 +1,6 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use crate::input::{default_camera_input_map, CameraAction};
+use crate::input::{default_camera_input_map, PlayerAction};
 use leafwing_input_manager::prelude::*;
 
 pub fn spawn_camera(mut commands: Commands) {
@@ -10,7 +10,7 @@ pub fn spawn_camera(mut commands: Commands) {
         Camera3d::default(),
         Transform::default(),
         RtsCamera::default(),
-        ActionState::<CameraAction>::default(),
+        ActionState::<PlayerAction>::default(),
         default_camera_input_map(),
         AmbientLight {
             color: Color::srgb(0.8, 0.85, 1.0),
@@ -24,20 +24,20 @@ pub fn update_rts_camera(
     time: Res<Time>,
     mouse_motion: Res<AccumulatedMouseMotion>,
     mouse_scroll: Res<AccumulatedMouseScroll>,
-    mut query: Query<(&ActionState<CameraAction>, &mut RtsCamera, &mut Transform)>,
+    mut query: Query<(&ActionState<PlayerAction>, &mut RtsCamera, &mut Transform)>,
 ) {
     for (actions, mut cam, mut transform) in &mut query {
         let dt = time.delta_secs();
 
-        if actions.pressed(&CameraAction::OrbitDrag) {
+        if actions.pressed(&PlayerAction::OrbitDrag) {
             cam.yaw -= mouse_motion.delta.x * cam.orbit_sensitivity;
             cam.pitch += mouse_motion.delta.y * cam.orbit_sensitivity;
         }
 
-        if actions.pressed(&CameraAction::RotateLeft) {
+        if actions.pressed(&PlayerAction::RotateLeft) {
             cam.yaw -= 1.5 * dt;
         }
-        if actions.pressed(&CameraAction::RotateRight) {
+        if actions.pressed(&PlayerAction::RotateRight) {
             cam.yaw += 1.5 * dt;
         }
 
@@ -53,12 +53,12 @@ pub fn update_rts_camera(
         // Panning
         let mut move_dir = Vec2::ZERO;
 
-        if actions.pressed(&CameraAction::PanForward) { move_dir.y += 1.0; }
-        if actions.pressed(&CameraAction::PanBackward) { move_dir.y -= 1.0; }
-        if actions.pressed(&CameraAction::PanLeft) { move_dir.x -= 1.0; }
-        if actions.pressed(&CameraAction::PanRight) { move_dir.x += 1.0; }
+        if actions.pressed(&PlayerAction::PanForward) { move_dir.y += 1.0; }
+        if actions.pressed(&PlayerAction::PanBackward) { move_dir.y -= 1.0; }
+        if actions.pressed(&PlayerAction::PanLeft) { move_dir.x -= 1.0; }
+        if actions.pressed(&PlayerAction::PanRight) { move_dir.x += 1.0; }
 
-        if actions.pressed(&CameraAction::PanDrag) {
+        if actions.pressed(&PlayerAction::PanDrag) {
             move_dir.x -= mouse_motion.delta.x * 0.1;
             move_dir.y += mouse_motion.delta.y * 0.1;
         }
@@ -80,6 +80,30 @@ pub fn update_rts_camera(
 
         transform.translation = cam.target + Vec3::new(x, y, z);
         transform.look_at(cam.target, Vec3::Y);
+    }
+}
+
+pub fn update_current_level(
+    mut level: ResMut<CurrentLevel>,
+    action_query: Query<&ActionState<PlayerAction>>,
+) {
+    for action in action_query.iter() {
+        if action.just_pressed(&PlayerAction::LayerUp) {
+            level.0 += 1;
+        }
+
+        if action.just_pressed(&PlayerAction::LayerDown) {
+            level.0 -= 1;
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct CurrentLevel(pub i32);
+
+impl Default for CurrentLevel {
+    fn default() -> Self {
+        Self(0)
     }
 }
 

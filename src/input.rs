@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
 #[derive(Actionlike, PartialEq, Eq, Clone, Copy, Hash, Debug, Reflect)]
-pub enum CameraAction {
+pub enum PlayerAction {
     PanForward,
     PanBackward,
     PanLeft,
@@ -12,28 +12,34 @@ pub enum CameraAction {
     PanDrag,
     OrbitDrag,
     Zoom,
+    LayerUp,
+    LayerDown,
 }
 
-pub fn default_camera_input_map() -> InputMap<CameraAction> {
+pub fn default_camera_input_map() -> InputMap<PlayerAction> {
     let mut map = InputMap::default();
 
     // Keyboard panning
-    map.insert(CameraAction::PanForward, KeyCode::KeyW);
-    map.insert(CameraAction::PanForward, KeyCode::ArrowUp);
-    map.insert(CameraAction::PanBackward, KeyCode::KeyS);
-    map.insert(CameraAction::PanBackward, KeyCode::ArrowDown);
-    map.insert(CameraAction::PanLeft, KeyCode::KeyA);
-    map.insert(CameraAction::PanLeft, KeyCode::ArrowLeft);
-    map.insert(CameraAction::PanRight, KeyCode::KeyD);
-    map.insert(CameraAction::PanRight, KeyCode::ArrowRight);
+    map.insert(PlayerAction::PanForward, KeyCode::KeyW);
+    map.insert(PlayerAction::PanForward, KeyCode::ArrowUp);
+    map.insert(PlayerAction::PanBackward, KeyCode::KeyS);
+    map.insert(PlayerAction::PanBackward, KeyCode::ArrowDown);
+    map.insert(PlayerAction::PanLeft, KeyCode::KeyA);
+    map.insert(PlayerAction::PanLeft, KeyCode::ArrowLeft);
+    map.insert(PlayerAction::PanRight, KeyCode::KeyD);
+    map.insert(PlayerAction::PanRight, KeyCode::ArrowRight);
 
     // Keyboard rotation
-    map.insert(CameraAction::RotateLeft, KeyCode::KeyQ);
-    map.insert(CameraAction::RotateRight, KeyCode::KeyE);
+    map.insert(PlayerAction::RotateLeft, KeyCode::KeyQ);
+    map.insert(PlayerAction::RotateRight, KeyCode::KeyE);
 
     // Mouse chords
-    map.insert(CameraAction::OrbitDrag, MouseButton::Right);
-    map.insert(CameraAction::PanDrag, MouseButton::Middle);
+    map.insert(PlayerAction::OrbitDrag, MouseButton::Right);
+    map.insert(PlayerAction::PanDrag, MouseButton::Middle);
+    
+    // Layer Keys
+    map.insert(PlayerAction::LayerUp, KeyCode::BracketRight);
+    map.insert(PlayerAction::LayerDown, KeyCode::BracketLeft);
 
     map
 }

@@ -1,20 +1,26 @@
 mod voxel;
 mod camera;
 mod input;
+mod ui;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
-use crate::camera::update_rts_camera;
-use crate::input::CameraAction;
+use crate::camera::{update_current_level, update_rts_camera, CurrentLevel};
+use crate::input::PlayerAction;
+use crate::ui::{spawn_level_ui, update_level_ui};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(InputManagerPlugin::<CameraAction>::default())
+        .add_plugins(InputManagerPlugin::<PlayerAction>::default())
+        .insert_resource(CurrentLevel::default())
         .add_systems(Startup, voxel::spawn_voxel_map)
         .add_systems(Startup, camera::spawn_camera)
         .add_systems(Startup, spawn_test_light)
+        .add_systems(Startup, spawn_level_ui)
         .add_systems(Update, update_rts_camera)
+        .add_systems(Update, update_current_level)
+        .add_systems(Update, update_level_ui.after(update_current_level))
         .run();
 }
 
