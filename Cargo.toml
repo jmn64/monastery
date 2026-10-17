@@ -1,0 +1,21 @@
+[package]
+name = "monastery"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.19.1", features = ["wayland", "dynamic_linking"] }
+leafwing-input-manager = "0.21.0"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
