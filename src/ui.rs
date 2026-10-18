@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use crate::camera::{CurrentLevel, SliceSettings};
+use crate::state::AppState;
 
 #[derive(Component)]
 pub struct LevelText;
@@ -7,6 +8,7 @@ pub struct LevelText;
 pub fn spawn_level_ui(mut commands: Commands) {
     commands
         .spawn((
+            DespawnOnExit(AppState::InGame),
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(16.0),
@@ -37,7 +39,7 @@ pub fn update_level_ui(
     slice: Res<SliceSettings>,
     mut query: Query<&mut Text, With<LevelText>>,
 ) {
-    if !level.is_changed() {
+    if !level.is_changed() && !slice.is_changed() {
         return;
     }
 

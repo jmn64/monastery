@@ -4,6 +4,7 @@ use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
 use bevy::tasks::ComputeTaskPool;
 use crate::camera::{CurrentLevel, SliceSettings};
+use crate::state::AppState;
 use crate::terrain_gen::{apply_hydraulic_erosion, generate_base_noise, ErosionSettings, Heightfield2d};
 
 pub const CHUNK_SIZE: usize = 32;
@@ -29,9 +30,11 @@ pub fn spawn_voxel_map(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chunk_storage: ResMut<WorldChunkStorage>,
+    erosion_settings: Res<ErosionSettings>,
     level: Res<CurrentLevel>,
     slice_settings: Res<SliceSettings>,
 ) {
+    chunk_storage.chunks.clear();
     let material_handle = materials.add(StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: 0.85,
@@ -43,7 +46,7 @@ pub fn spawn_voxel_map(
 
     // Multi pass generation: noise base + hydraulic
     generate_base_noise(&mut heightfield, 6.0, (CHUNK_SIZE - 4) as f32);
-    apply_hydraulic_erosion(&mut heightfield, &ErosionSettings::default());
+    apply_hydraulic_erosion(&mut heightfield, &erosion_settings);
 
     let sea_level: usize = 10;
     let initial_max_y = if slice_settings.enabled {
@@ -75,6 +78,7 @@ pub fn spawn_voxel_map(
             let world_z = (cz * CHUNK_SIZE as i32) as f32;
 
             commands.spawn((
+                DespawnOnExit(AppState::InGame),
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(material_handle.clone()),
                 Transform::from_xyz(world_x, 0.0, world_z),

@@ -1,3 +1,4 @@
+use bevy::prelude::*;
 use crate::voxel::VoxelType;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -103,6 +104,7 @@ pub fn generate_base_noise(field: &mut Heightfield2d, min_height: f32, max_heigh
 
 // Hydraulic Erosion
 
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct ErosionSettings {
     pub droplets: usize,
     pub inertia: f32,
