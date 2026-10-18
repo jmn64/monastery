@@ -4,6 +4,9 @@ mod input;
 mod ui;
 mod terrain_gen;
 mod state;
+mod trees;
+mod calendar;
+mod environmental;
 
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
