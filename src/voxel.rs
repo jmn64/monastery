@@ -3,9 +3,11 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::asset::RenderAssetUsages;
 use bevy::tasks::ComputeTaskPool;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::image::{ImageSampler, ImageSamplerDescriptor, ImageFilterMode};
 use crate::camera::{CurrentLevel, SliceSettings};
 use crate::state::AppState;
-use crate::terrain_gen::{apply_hydraulic_erosion, generate_base_noise, ErosionSettings, Heightfield2d};
+use crate::terrain_gen::{apply_hydraulic_erosion, generate_base_noise, ErosionSettings, Heightfield2d, RockCategory};
 
 pub const CHUNK_SIZE: usize = 32;
 pub const CHUNK_VOLUME: usize = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;
@@ -29,14 +31,18 @@ pub fn spawn_voxel_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut chunk_storage: ResMut<WorldChunkStorage>,
     erosion_settings: Res<ErosionSettings>,
     level: Res<CurrentLevel>,
     slice_settings: Res<SliceSettings>,
 ) {
     chunk_storage.chunks.clear();
+
+    let atlas_handle = generate_voxel_atlas(&mut images);
     let material_handle = materials.add(StandardMaterial {
         base_color: Color::WHITE,
+        base_color_texture: Some(atlas_handle),
         perceptual_roughness: 0.85,
         ..default()
     });
@@ -179,9 +185,26 @@ pub fn generate_terrain_chunk(
             let h_val = field.get_height(field_x as usize, field_z as usize);
             let ground_height = (h_val.round() as usize).clamp(1, CHUNK_SIZE - 2);
 
+            let bedrock_cat = field.bedrock[field.index(field_x as usize, field_z as usize)];
+
             for ly in 0..CHUNK_SIZE {
                 let voxel = if ly < ground_height.saturating_sub(3) {
-                    VoxelType::Stone
+                    match bedrock_cat {
+                        RockCategory::Sedimentary => match ly % 8 {
+                            0..=3 => VoxelType::Limestone,
+                            4..=6 => VoxelType::Sandstone,
+                            _ => VoxelType::Shale,
+                        },
+                        RockCategory::IgneousIntrusive => {
+                            if (field_x + ly as i32 + field_z) % 5 == 0 { VoxelType::Diorite } else { VoxelType::Granite }
+                        }
+                        RockCategory::IgneousExtrusive => {
+                            if ly < 4 { VoxelType::Obsidian } else { VoxelType::Basalt }
+                        }
+                        RockCategory::Metamorphic => {
+                            if ly % 5 == 0 { VoxelType::Marble } else { VoxelType::Slate }
+                        }
+                    }
                 } else if ly < ground_height {
                     VoxelType::Dirt
                 } else if ly == ground_height {
@@ -204,36 +227,254 @@ pub fn generate_terrain_chunk(
     chunk
 }
 
+pub const TILE_SIZE: usize = 16;
+pub const ATLAS_TILES: usize = 15; // matches number of VoxelType variants
+
+#[derive(Clone, Copy)]
+pub enum PatternFamily {
+    Solid,
+    Soil { contrast: f32 },
+    Stratified { band_freq: f32, band_contrast: f32, noise_contrast: f32 },
+    Speckled { density: f32, contrast: f32 },
+    FineGrain { contrast: f32, glossy_streak: bool },
+    Foliated { vein_freq: f32, sharpness: f32, contrast: f32 },
+    WoodGrain { fiber_freq: f32, contrast: f32 },
+}
+
+pub struct TextureRecipe {
+    pub base_rgb: [f32; 3],
+    pub secondary_rgb: [f32; 3], // for veins, speckles, strata bands
+    pub family: PatternFamily,
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VoxelType {
     Air = 0,
-    Stone = 1,
-    Dirt = 2,
-    Grass = 3,
-    Water = 4,
+    Dirt = 1,
+    Grass = 2,
+    Water = 3,
+    // Sedimentary Rock
+    Limestone = 4,
+    Sandstone = 5,
+    Shale = 6,
+    // Igneous Intrusive
+    Granite = 7,
+    Diorite = 8,
+    // Igneous Extrusive
+    Basalt = 9,
+    Obsidian = 10,
+    // Metamorphic
+    Marble = 11,
+    Slate = 12,
+    // Wood
+    Oak = 13,
+    Pine = 14,
 }
 
 impl VoxelType {
+    pub const ALL: [VoxelType; ATLAS_TILES] = [
+        Self::Air, Self::Dirt, Self::Grass, Self::Water,
+        Self::Limestone, Self::Sandstone, Self::Shale,
+        Self::Granite, Self::Diorite,
+        Self::Basalt, Self::Obsidian,
+        Self::Marble, Self::Slate,
+        Self::Oak, Self::Pine,
+    ];
     #[inline(always)]
     pub fn is_opaque(&self) -> bool {
         *self != VoxelType::Air
+    }
+
+    pub fn atlas_index(&self) -> usize {
+        *self as usize
+    }
+
+    pub fn recipe(&self) -> TextureRecipe {
+        use PatternFamily::*;
+        match self {
+            VoxelType::Air => TextureRecipe {
+                base_rgb: [0.0, 0.0, 0.0],
+                secondary_rgb: [0.0, 0.0, 0.0],
+                family: Solid,
+            },
+            VoxelType::Dirt => TextureRecipe {
+                base_rgb: [0.42, 0.30, 0.20],
+                secondary_rgb: [0.30, 0.21, 0.14],
+                family: Soil { contrast: 0.35 },
+            },
+            VoxelType::Grass => TextureRecipe {
+                base_rgb: [0.28, 0.52, 0.22],
+                secondary_rgb: [0.20, 0.40, 0.15],
+                family: Soil { contrast: 0.30 },
+            },
+            VoxelType::Water => TextureRecipe {
+                base_rgb: [0.15, 0.38, 0.78],
+                secondary_rgb: [0.22, 0.48, 0.85],
+                family: Stratified { band_freq: 1.5, band_contrast: 0.2, noise_contrast: 0.05 },
+            },
+            // Sedimentary Rocks
+            VoxelType::Limestone => TextureRecipe {
+                base_rgb: [0.76, 0.74, 0.66],
+                secondary_rgb: [0.64, 0.61, 0.53],
+                family: Stratified { band_freq: 2.0, band_contrast: 0.4, noise_contrast: 0.15 },
+            },
+            VoxelType::Sandstone => TextureRecipe {
+                base_rgb: [0.82, 0.68, 0.45],
+                secondary_rgb: [0.70, 0.52, 0.32],
+                family: Stratified { band_freq: 3.0, band_contrast: 0.5, noise_contrast: 0.20 },
+            },
+            VoxelType::Shale => TextureRecipe {
+                base_rgb: [0.32, 0.34, 0.36],
+                secondary_rgb: [0.22, 0.23, 0.25],
+                family: Stratified { band_freq: 5.0, band_contrast: 0.6, noise_contrast: 0.10 },
+            },
+            // Igneous Intrusive Rocks
+            VoxelType::Granite => TextureRecipe {
+                base_rgb: [0.62, 0.48, 0.46],
+                secondary_rgb: [0.25, 0.22, 0.22],
+                family: Speckled { density: 0.35, contrast: 0.7 },
+            },
+            VoxelType::Diorite => TextureRecipe {
+                base_rgb: [0.82, 0.82, 0.84],
+                secondary_rgb: [0.18, 0.18, 0.20],
+                family: Speckled { density: 0.45, contrast: 0.85 },
+            },
+            // Igneous Extrusive Rocks
+            VoxelType::Basalt => TextureRecipe {
+                base_rgb: [0.20, 0.21, 0.23],
+                secondary_rgb: [0.12, 0.12, 0.14],
+                family: FineGrain { contrast: 0.4, glossy_streak: false },
+            },
+            VoxelType::Obsidian => TextureRecipe {
+                base_rgb: [0.08, 0.06, 0.12],
+                secondary_rgb: [0.24, 0.18, 0.35],
+                family: FineGrain { contrast: 0.2, glossy_streak: true },
+            },
+            // Metamorphic Rocks
+            VoxelType::Marble => TextureRecipe {
+                base_rgb: [0.92, 0.91, 0.89],
+                secondary_rgb: [0.55, 0.56, 0.58],
+                family: Foliated { vein_freq: 2.0, sharpness: 4.0, contrast: 0.7 },
+            },
+            VoxelType::Slate => TextureRecipe {
+                base_rgb: [0.28, 0.31, 0.35],
+                secondary_rgb: [0.19, 0.21, 0.24],
+                family: Foliated { vein_freq: 4.0, sharpness: 1.5, contrast: 0.5 },
+            },
+            // Wood
+            VoxelType::Oak => TextureRecipe {
+                base_rgb: [0.60, 0.44, 0.26],
+                secondary_rgb: [0.42, 0.29, 0.16],
+                family: WoodGrain { fiber_freq: 4.0, contrast: 0.6 },
+            },
+            VoxelType::Pine => TextureRecipe {
+                base_rgb: [0.78, 0.64, 0.42],
+                secondary_rgb: [0.60, 0.46, 0.28],
+                family: WoodGrain { fiber_freq: 3.0, contrast: 0.5 },
+            },
+        }
     }
 
     #[inline(always)]
     pub fn is_water(&self) -> bool {
         *self == VoxelType::Water
     }
+}
 
-    pub fn color(&self) -> [f32; 4] {
-        match self {
-            VoxelType::Air => [0.0, 0.0, 0.0, 0.0],
-            VoxelType::Stone => [0.07, 0.07, 0.06, 1.0],
-            VoxelType::Dirt => [0.50, 0.52, 0.55, 1.0],
-            VoxelType::Grass => [0.28, 0.50, 0.22, 1.0],
-            VoxelType::Water => [0.15, 0.35, 0.75, 0.75],
+pub fn generate_voxel_atlas(images: &mut Assets<Image>) -> Handle<Image> {
+    let width = TILE_SIZE * ATLAS_TILES;
+    let height = TILE_SIZE;
+    let mut pixels = vec![255u8; width * height * 4];
+
+    for voxel in VoxelType::ALL {
+        let tile_idx = voxel.atlas_index();
+        let recipe = voxel.recipe();
+        let tau = std::f32::consts::TAU;
+
+        for y in 0..TILE_SIZE {
+            for x in 0..TILE_SIZE {
+                let u = x as f32 / TILE_SIZE as f32;
+                let v = y as f32 / TILE_SIZE as f32;
+                let n = pixel_hash(x, y, tile_idx);
+
+                // Calculate blend factor `t` in [0.0, 1.0] between base and secondary
+                let t = match recipe.family {
+                    PatternFamily::Solid => 0.0,
+                    PatternFamily::Soil { contrast } => n * contrast,
+                    PatternFamily::Stratified { band_freq, band_contrast, noise_contrast } => {
+                        let wave = ((v * band_freq * tau + n * 0.8).sin() * 0.5 + 0.5) * band_contrast;
+                        (wave + n * noise_contrast).clamp(0.0, 1.0)
+                    }
+                    PatternFamily::Speckled { density, contrast } => {
+                        if n < density {
+                            (n / density) * contrast
+                        } else {
+                            (n - 0.5) * 0.15
+                        }
+                    }
+                    PatternFamily::FineGrain { contrast, glossy_streak } => {
+                        let streak = if glossy_streak {
+                            ((u + v * 1.5) * tau).sin().max(0.0).powf(4.0) * 0.6
+                        } else {
+                            0.0
+                        };
+                        (n * contrast + streak).clamp(0.0, 1.0)
+                    }
+                    PatternFamily::Foliated { vein_freq, sharpness, contrast } => {
+                        let diag = (u + v + (n - 0.5) * 0.25) * vein_freq * tau;
+                        let vein = (diag.sin() * 0.5 + 0.5).powf(sharpness);
+                        (vein * contrast).clamp(0.0, 1.0)
+                    }
+                    PatternFamily::WoodGrain { fiber_freq, contrast } => {
+                        let stretch_noise = pixel_hash(x, y / 4, tile_idx);
+                        let grain = ((u * fiber_freq * tau + stretch_noise * 1.5).sin() * 0.5 + 0.5) * contrast;
+                        (grain + n * 0.1).clamp(0.0, 1.0)
+                    }
+                };
+
+                let t = t.clamp(0.0, 1.0);
+                let r = recipe.base_rgb[0] * (1.0 - t) + recipe.secondary_rgb[0] * t;
+                let g = recipe.base_rgb[1] * (1.0 - t) + recipe.secondary_rgb[1] * t;
+                let b = recipe.base_rgb[2] * (1.0 - t) + recipe.secondary_rgb[2] * t;
+
+                let px_idx = (y * width + (tile_idx * TILE_SIZE + x)) * 4;
+                pixels[px_idx] = (r.clamp(0.0, 1.0) * 255.0) as u8;
+                pixels[px_idx + 1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
+                pixels[px_idx + 2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
+                pixels[px_idx + 3] = 255;
+            }
         }
     }
+
+    let mut image = Image::new(
+        Extent3d {
+            width: width as u32,
+            height: height as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        mag_filter: ImageFilterMode::Nearest,
+        min_filter: ImageFilterMode::Nearest,
+        ..default()
+    });
+
+    images.add(image)
+}
+
+fn pixel_hash(x: usize, y: usize, seed: usize) -> f32 {
+    let mut n = (x.wrapping_mul(374761393))
+        .wrapping_add(y.wrapping_mul(668265263))
+        .wrapping_add(seed.wrapping_mul(982451653));
+    n = (n ^ (n >> 13)).wrapping_mul(1274126177);
+
+    ((n ^ (n >> 16)) & 0x7fffffff) as f32 / 2147483647.0
 }
 
 #[derive(Component)]
@@ -280,29 +521,36 @@ impl ChunkData {
 pub struct ChunkMeshBuffers {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
-    pub colors: Vec<[f32; 4]>,
+    pub tangents: Vec<[f32; 4]>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
 
 impl ChunkMeshBuffers {
-    pub fn push_face(&mut self, origin: [f32; 3], dir: Direction, color: [f32; 4]) {
+    pub fn push_face(&mut self, origin: [f32; 3], dir: Direction, voxel: VoxelType) {
         let base_idx = self.positions.len() as u32;
         let corners = dir.quad_vertices();
         let normal = dir.normal_f();
+        let tangent = dir.tangent_f();
 
         // Emit 4 vertices
         for [vx, vy, vz] in corners {
             self.positions.push([origin[0] + vx, origin[1] + vy, origin[2] + vz]);
             self.normals.push(normal);
-            self.colors.push(color);
+            self.tangents.push(tangent);
         }
 
+        let tile = voxel.atlas_index() as f32;
+        let total = ATLAS_TILES as f32;
+        let eps = 0.001 / total; // prevent seam bleeding
+        let u_min = (tile / total) + eps;
+        let u_max = ((tile + 1.0) / total) - eps;
+
         self.uvs.extend_from_slice(&[
-            [0.0, 1.0],
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
+            [u_min, 1.0],
+            [u_min, 0.0],
+            [u_max, 0.0],
+            [u_max, 1.0],
         ]);
 
         //Triangles that form quad
@@ -337,7 +585,7 @@ pub fn generate_sliced_chunk_mesh(chunk: &ChunkData, max_render_y: usize) -> Mes
 
                 for dir in DIRECTIONS {
                     if dir == Direction::PosY && y == max_render_y {
-                        buffers.push_face(origin, dir, current.color());
+                        buffers.push_face(origin, dir, current);
                         continue;
                     }
 
@@ -353,7 +601,7 @@ pub fn generate_sliced_chunk_mesh(chunk: &ChunkData, max_render_y: usize) -> Mes
                     };
 
                     if !neighbor_opaque {
-                        buffers.push_face(origin, dir, current.color());
+                        buffers.push_face(origin, dir, current);
                     }
                 }
             }
@@ -366,7 +614,7 @@ pub fn generate_sliced_chunk_mesh(chunk: &ChunkData, max_render_y: usize) -> Mes
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, buffers.positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, buffers.normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, buffers.colors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, buffers.tangents);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, buffers.uvs);
     mesh.insert_indices(Indices::U32(buffers.indices));
 
@@ -408,6 +656,17 @@ impl Direction {
             Direction::NegY => [0.0, -1.0, 0.0],
             Direction::PosZ => [0.0, 0.0, 1.0],
             Direction::NegZ => [0.0, 0.0, -1.0],
+        }
+    }
+
+    pub const fn tangent_f(&self) -> [f32; 4] {
+        match self {
+            Direction::PosX => [0.0, 0.0, -1.0, 1.0],
+            Direction::NegX => [0.0, 0.0, 1.0, 1.0],
+            Direction::PosY => [1.0, 0.0, 0.0, 1.0],
+            Direction::NegY => [1.0, 0.0, 0.0, 1.0],
+            Direction::PosZ => [-1.0, 0.0, 0.0, 1.0],
+            Direction::NegZ => [1.0, 0.0, 0.0, 1.0],
         }
     }
 
